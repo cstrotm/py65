@@ -52,6 +52,7 @@ class Monitor(cmd.Cmd):
         self._breakpoints = []
         self._width = 78
         self.prompt = "."
+        self.trace = False
         self._add_shortcuts()
         cmd.Cmd.__init__(self, stdin=stdin, stdout=stdout)
 
@@ -180,6 +181,7 @@ class Monitor(cmd.Cmd):
                            'shb':  'show_breakpoints',
                            'shl':  'show_labels',
                            'x':    'quit',
+                           't':    'trace',
                            'z':    'step'}
 
     def _preprocess_line(self, line):
@@ -470,6 +472,9 @@ class Monitor(cmd.Cmd):
         if not breakpoints:
             while True:
                 mpu.step()
+                if self.trace:
+                    print("MPU PC:", hex(mpu.pc))
+
                 if mem[mpu.pc] in stopcodes:
                     break
         else:
@@ -730,15 +735,20 @@ class Monitor(cmd.Cmd):
             return self.help_mem()
 
         start, end = self._address_parser.range(split[0])
-
+        text = " "
         line = self.addrFmt % start + ":"
         for address in range(start, end + 1):
             byte = self._mpu.memory[address]
-            more = "  " + self.byteFmt % byte
+            more = " " + self.byteFmt % byte
+            if (byte > 31 and byte < 122):
+                text = text + chr(byte)
+            else:
+                text = text + "."
 
-            exceeded = len(line) + len(more) > self._width
+            exceeded = len(line) + len(more) + len(text) > self._width
             if exceeded:
-                self._output(line)
+                self._output(line + text)
+                text = " "
                 line = self.addrFmt % address + ":"
             line += more
         self._output(line)
@@ -862,6 +872,14 @@ class Monitor(cmd.Cmd):
     def help_show_breakpoints(self):
         self._output("show_breakpoints")
         self._output("Lists the currently assigned breakpoints")
+
+    def do_trace(self, args):
+        self.trace = not self.trace
+        self._output("Trace status: %s" % self.trace)
+
+    def help_trace(self):
+        self._output("trace")
+        self._output("toggle trace output")
 
 def main(args=None):
     c = Monitor()
