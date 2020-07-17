@@ -12,6 +12,8 @@ Options:
 -g, --goto <address>   : Perform a goto command after loading any files
 -i, --input <address>  : define location of getc (default $f004)
 -o, --output <address> : define location of putc (default $f001)
+-b, --blockio <address>: define location of blockio (default $f010)
+-f, --blockfile <file> : blockfile to use for block I/O
 """
 
 import cmd
@@ -44,11 +46,13 @@ class Monitor(cmd.Cmd):
 
     def __init__(self, argv=None, stdin=None, stdout=None,
                        mpu_type=NMOS6502, memory=None,
-                       putc_addr=0xF001, getc_addr=0xF004):
+                       putc_addr=0xF001, getc_addr=0xF004, blockio_addr=0xF010):
         self.mpu_type = mpu_type
         self.memory = memory
         self.putc_addr = putc_addr
         self.getc_addr = getc_addr
+        self.blockio_addr = blockio_addr
+        self.blockfile = "blockfile.fb"
         self._breakpoints = []
         self._width = 78
         self.prompt = "."
@@ -58,7 +62,7 @@ class Monitor(cmd.Cmd):
 
         if argv is None:
             argv = sys.argv
-        load, rom, goto = self._parse_args(argv)
+        load, rom, goto, blockfile = self._parse_args(argv)
 
         self._reset(self.mpu_type, self.getc_addr, self.putc_addr)
 
@@ -77,17 +81,20 @@ class Monitor(cmd.Cmd):
                 (self._mpu.memory[reset + 1] << self.byteWidth)
             self.do_goto("$%x" % dest)
 
+        if blockfile is not None:
+            self.blockfile = blockfile
+
     def _parse_args(self, argv):
         try:
-            shortopts = 'hi:o:m:l:r:g:'
-            longopts = ['help', 'mpu=', 'input=', 'output=', 'load=', 'rom=', 'goto=']
+            shortopts = 'hi:o:m:l:r:g:b:f'
+            longopts = ['help', 'mpu=', 'input=', 'output=', 'load=', 'rom=', 'goto=', 'blockio=', 'blockfile=']
             options, args = getopt.getopt(argv[1:], shortopts, longopts)
         except getopt.GetoptError as exc:
             self._output(exc.args[0])
             self._usage()
             self._exit(1)
 
-        load, rom, goto = None, None, None
+        load, rom, goto, blockfile = None, None, None, None
 
         for opt, value in options:
             if opt in ('-i', '--input'):
@@ -95,6 +102,9 @@ class Monitor(cmd.Cmd):
 
             if opt in ('-o', '--output'):
                 self.putc_addr = int(value, 16)
+
+            if opt in ('-b', '--blockio'):
+                self.blockio_addr = int(value, 16)
 
             if opt in ('-m', '--mpu'):
                 mpu_type = self._get_mpu(value)
@@ -118,7 +128,11 @@ class Monitor(cmd.Cmd):
             if opt in ('-g', '--goto'):
                 goto = value
 
-        return load, rom, goto
+            if opt in ('-f', '--blockfile'):
+                blockfile = value
+                self._output(value)
+
+        return load, rom, goto, blockfile
 
     def _usage(self):
         usage = __doc__ % sys.argv[0]
@@ -241,9 +255,55 @@ class Monitor(cmd.Cmd):
                 byte = 0
             return byte
 
+        def blockio(address, value):
+            block = self._mpu.memory[self.blockio_addr+1 & self.addrMask] + (self._mpu.memory[self.blockio_addr+2 & self.addrMask] * 0x100)
+            start = self._mpu.memory[self.blockio_addr+3 & self.addrMask] + (self._mpu.memory[self.blockio_addr+4 & self.addrMask] * 0x100)
+            if (value == 1): # read block
+                # self._output("Block I/O Read from block %s to %s" % (hex(block), hex(start)))
+                f = open(self.blockfile,"rb")
+                f.seek(block * 0x400) # seek to block
+                bytes = f.read(0x400) # read 1024 bytes
+                f.close()
+                if self.byteWidth == 8:
+                    if isinstance(bytes, str):
+                        bytes = map(ord, bytes)
+                    else: # Python 3
+                        bytes = [ b for b in bytes ]
+
+                elif self.byteWidth == 16:
+                    def format(msb, lsb):
+                        if isinstance(bytes, str):
+                            return (ord(msb) << 8) + ord(lsb)
+                        else: # Python 3
+                            return (msb << 8) + lsb
+                    bytes = list(map(format, bytes[0::2], bytes[1::2]))
+
+                length, index = len(bytes), 0
+
+                address = start
+                end = start + length - 1
+                if (end > self.addrMask):
+                    end = self.addrMask
+                while address <= end:
+                    address &= self.addrMask
+                    self._mpu.memory[address] = (bytes[index] & self.byteMask)
+                    index += 1
+                    if index == length:
+                        index = 0
+                    address += 1
+
+            elif (value == 2): # write block
+                self._output("Block I/O Write")
+            elif (value == 3): # format block
+                self._output("Block I/O Format")
+            else:
+                self._output("Unknown Block-I/O command %d" % value)
+
+
         m = ObservableMemory(subject=self.memory, addrWidth=self.addrWidth)
         m.subscribe_to_write([self.putc_addr], putc)
         m.subscribe_to_read([self.getc_addr], getc)
+        m.subscribe_to_write([self.blockio_addr], blockio)
 
         self._mpu.memory = m
 
