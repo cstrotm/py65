@@ -256,10 +256,8 @@ class Monitor(cmd.Cmd):
             return byte
 
         def blockio(address, value):
-            block = self._mpu.memory[self.blockio_addr+1 & self.addrMask] + (self._mpu.memory[self.blockio_addr+2 & self.addrMask] * 0x100)
-            start = self._mpu.memory[self.blockio_addr+3 & self.addrMask] + (self._mpu.memory[self.blockio_addr+4 & self.addrMask] * 0x100)
-            if (value == 1): # read block
-                # self._output("Block I/O Read from block %s to %s" % (hex(block), hex(start)))
+
+            def readblock(block, address):
                 f = open(self.blockfile,"rb")
                 f.seek(block * 0x400) # seek to block
                 bytes = f.read(0x400) # read 1024 bytes
@@ -279,8 +277,6 @@ class Monitor(cmd.Cmd):
                     bytes = list(map(format, bytes[0::2], bytes[1::2]))
 
                 length, index = len(bytes), 0
-
-                address = start
                 end = start + length - 1
                 if (end > self.addrMask):
                     end = self.addrMask
@@ -292,8 +288,34 @@ class Monitor(cmd.Cmd):
                         index = 0
                     address += 1
 
+            def writeblock(block, address):
+                end = start + 0x3ff
+                if (end > self.addrMask):
+                    end = self.addrMask
+
+                mem = self._mpu.memory[start:end + 1]
+                try:
+                    f = open(self.blockfile, 'r+b')
+                    f.seek(block * 0x400) # seek to block
+                    for m in mem:
+                        # output each octect from msb first
+                        for shift in range(self.byteWidth - 8, -1, -8):
+                            f.write(bytearray([(m >> shift) & 0xff]))
+                    f.close()
+                except (OSError, IOError) as exc:
+                    msg = "Cannot write block to file: [%d] %s" % (exc.errno, exc.strerror)
+                    self._output(msg)
+                    return
+
+
+            block = self._mpu.memory[self.blockio_addr+1 & self.addrMask] + (self._mpu.memory[self.blockio_addr+2 & self.addrMask] * 0x100)
+            start = self._mpu.memory[self.blockio_addr+3 & self.addrMask] + (self._mpu.memory[self.blockio_addr+4 & self.addrMask] * 0x100)
+            if (value == 1): # read block
+                # self._output("Block I/O Read from block %s to %s" % (hex(block), hex(start)))
+                readblock(block, start)
             elif (value == 2): # write block
-                self._output("Block I/O Write")
+                # self._output("Block I/O Write of block %s from address %s" % (hex(block), hex(start)))
+                writeblock(block, start)
             elif (value == 3): # format block
                 self._output("Block I/O Format")
             else:
